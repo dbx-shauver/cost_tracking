@@ -9,7 +9,7 @@
         "  u.workspace_id,\n",
         "  w.workspace_name,\n",
         "  sum(u.usage_quantity * lp.pricing.default) as total_list_usd,\n",
-        "  sum(u.usage_quantity * lp.pricing.default) * 0.58 as total_gap_usd,\n",
+        "  sum(u.usage_quantity * lp.pricing.default) * 0.58 as total_heb_usd,\n",
         "  case \n",
         "    when exists (\n",
         "      select 1 \n",
@@ -45,7 +45,7 @@
         "    u.workspace_id,\n",
         "    w.workspace_name,\n",
         "    sum(u.usage_quantity * lp.pricing.default) as total_list_usd,\n",
-        "    sum(u.usage_quantity * lp.pricing.default) * 0.58 as total_gap_usd\n",
+        "    sum(u.usage_quantity * lp.pricing.default) * 0.58 as total_heb_usd\n",
         "  from system.billing.usage u\n",
         "  inner join system.access.workspaces_latest w \n",
         "    on u.workspace_id = w.workspace_id\n",
@@ -62,7 +62,7 @@
         "  select *\n",
         "  from monthly_spend\n",
         "  where YearMonth >= date_format(add_months(current_date(), -2), 'yyyy-MM')\n",
-        "    and total_gap_usd >= 500\n",
+        "    and total_heb_usd >= 500\n",
         "),\n",
         "ranked as (\n",
         "  select\n",
@@ -70,7 +70,7 @@
         "    workspace_name,\n",
         "    YearMonth,\n",
         "    total_list_usd,\n",
-        "    total_gap_usd,\n",
+        "    total_heb_usd,\n",
         "    row_number() over (partition by workspace_id order by YearMonth) as rn\n",
         "  from last_three_months\n",
         ")\n",
@@ -79,15 +79,15 @@
         "  r1.workspace_id,\n",
         "  r1.workspace_name,\n",
         "  r1.total_list_usd,\n",
-        "  r1.total_gap_usd,\n",
-        "  ((r1.total_gap_usd - r3.total_gap_usd) / r3.total_gap_usd) / 2 * 100 as avg_percent_growth_last_3_months\n",
+        "  r1.total_heb_usd,\n",
+        "  ((r1.total_heb_usd - r3.total_heb_usd) / r3.total_heb_usd) / 2 * 100 as avg_percent_growth_last_3_months\n",
         "from ranked r1\n",
         "join ranked r2 on r1.workspace_id = r2.workspace_id and r1.rn = 2 and r2.rn = 1\n",
         "join ranked r3 on r1.workspace_id = r3.workspace_id and r3.rn = 3\n",
         "where\n",
         "  r2.total_list_usd > r3.total_list_usd\n",
         "  and r1.total_list_usd > r2.total_list_usd\n",
-        "  and r1.total_gap_usd >= 500\n",
+        "  and r1.total_heb_usd >= 500\n",
         "order by r1.YearMonth, r1.total_list_usd desc"
       ],
       "catalog": "system",
@@ -102,7 +102,7 @@
         "  -- 5 yr forecast line includes trend line for 1.5% growth rate + 4.6m in planned migrations\n",
         "  ( ((269258.23+77700)*1.02) * POWER(1.015, (CAST(SUBSTR(YearMonth, 1, 4) AS INTEGER) - 2022) * 12 + (CAST(SUBSTR(YearMonth, 6, 2) AS INTEGER) - 1))) AS five_yr_forecast_line,\n",
         "  SUM(u.usage_quantity * lp.pricing.default) AS total_list_usd,\n",
-        "  SUM(u.usage_quantity * lp.pricing.default) * 0.58 AS total_gap_usd\n",
+        "  SUM(u.usage_quantity * lp.pricing.default) * 0.58 AS total_heb_usd\n",
         "FROM (\n",
         "  SELECT\n",
         "    date_format(date_trunc('month', u.usage_date), 'yyyy-MM') AS YearMonth,\n",
@@ -135,7 +135,7 @@
         "    (((269258.23+77700)*1.02) * POWER(1.015, (CAST(SUBSTR(YearMonth, 1, 4) AS INTEGER) - 2022) * 12 + (CAST(SUBSTR(YearMonth, 6, 2) AS INTEGER) - 1))) AS five_yr_forecast_line,\n",
         "    20259.89 * (ROW_NUMBER() OVER (ORDER BY YearMonth) - 1) + 454105.38 AS trend_value,\n",
         "    SUM(u.usage_quantity * lp.pricing.default) AS total_list_usd,\n",
-        "    SUM(u.usage_quantity * lp.pricing.default) * 0.58 AS total_gap_usd\n",
+        "    SUM(u.usage_quantity * lp.pricing.default) * 0.58 AS total_heb_usd\n",
         "  FROM (\n",
         "    SELECT\n",
         "      date_format(date_trunc('month', u.usage_date), 'yyyy-MM') AS YearMonth,\n",
@@ -240,7 +240,7 @@
         "      t1.runs,\n",
         "      t1.run_as,\n",
         "      SUM(list_cost) as list_cost,\n",
-        "      SUM(list_cost*.58) as gap_cost,\n",
+        "      SUM(list_cost*.58) as heb_cost,\n",
         "      t1.last_seen_date\n",
         "  FROM list_cost_per_job t1 \n",
         "    LEFT JOIN most_recent_jobs t2 USING (workspace_id, job_id)\n",
@@ -285,7 +285,7 @@
         "    (((269258.23+77700)*1.02) * POWER(1.015, (CAST(SUBSTR(YearMonth, 1, 4) AS INTEGER) - 2022) * 12 + (CAST(SUBSTR(YearMonth, 6, 2) AS INTEGER) - 1))) AS five_yr_forecast_line,\n",
         "    20259.89 * (ROW_NUMBER() OVER (ORDER BY YearMonth) - 1) + 454105.38 AS trend_value,\n",
         "    SUM(u.usage_quantity * lp.pricing.default) AS total_list_usd,\n",
-        "    SUM(u.usage_quantity * lp.pricing.default) * 0.58 AS total_gap_usd\n",
+        "    SUM(u.usage_quantity * lp.pricing.default) * 0.58 AS total_heb_usd\n",
         "  FROM (\n",
         "    SELECT\n",
         "      date_format(date_trunc('month', u.usage_date), 'yyyy-MM') AS YearMonth,\n",
@@ -312,7 +312,7 @@
         "  f.five_yr_forecast_line,\n",
         "  f.trend_value,\n",
         "  f.total_list_usd,\n",
-        "  f.total_gap_usd,\n",
+        "  f.total_heb_usd,\n",
         "  v3.yhat_y,\n",
         "  CASE \n",
         "    WHEN f.YearMonth >= '2025-10' THEN (f.trend_value + COALESCE(v3.yhat_y, 0)) / 2\n",
@@ -329,7 +329,7 @@
         "  (((269258.23+77700)*1.02) * POWER(1.015, (CAST(SUBSTR(LEFT(v3.ds, 7), 1, 4) AS INTEGER) - 2022) * 12 + (CAST(SUBSTR(LEFT(v3.ds, 7), 6, 2) AS INTEGER) - 1))) AS five_yr_forecast_line,\n",
         "  20259.89 * ((SELECT COUNT(*) FROM forecast) + ROW_NUMBER() OVER (ORDER BY LEFT(v3.ds, 7)) - 1) + 454105.38 AS trend_value,\n",
         "  NULL AS total_list_usd,\n",
-        "  NULL AS total_gap_usd,\n",
+        "  NULL AS total_heb_usd,\n",
         "  v3.yhat_y,\n",
         "  CASE \n",
         "    WHEN LEFT(v3.ds, 7) >= '2025-10' THEN (20259.89 * ((SELECT COUNT(*) FROM forecast) + ROW_NUMBER() OVER (ORDER BY LEFT(v3.ds, 7)) - 1) + 454105.38 + COALESCE(v3.yhat_y, 0)) / 2\n",
@@ -382,7 +382,7 @@
         "    t1.run_id,\n",
         "    t1.run_as,\n",
         "    SUM(list_cost) as list_cost,\n",
-        "    SUM(list_cost)*.58 as gap_cost,\n",
+        "    SUM(list_cost)*.58 as heb_cost,\n",
         "    t1.last_seen_date\n",
         "FROM list_cost_per_job_run t1 \n",
         "  LEFT JOIN most_recent_jobs t2 USING (workspace_id, job_id)\n",
@@ -427,8 +427,8 @@
                       "expression": "`YearMonth`"
                     },
                     {
-                      "name": "total_gap_usd",
-                      "expression": "`total_gap_usd`"
+                      "name": "total_heb_usd",
+                      "expression": "`total_heb_usd`"
                     },
                     {
                       "name": "yhat_y",
@@ -473,7 +473,7 @@
                   "primary": {
                     "fields": [
                       {
-                        "fieldName": "total_gap_usd",
+                        "fieldName": "total_heb_usd",
                         "displayName": "    Actual Consumption"
                       }
                     ]
@@ -532,7 +532,7 @@
                 "title": "Total Actual Consumption",
                 "showTitle": true,
                 "showDescription": true,
-                "description": "Measured by aggregating spend across all workspaces within the Gap Data Platform (GDP)"
+                "description": "Measured by aggregating spend across all workspaces within the HEB Data Platform (GDP)"
               }
             }
           },
@@ -550,7 +550,7 @@
               "lines": [
                 "### Forecasting Analysis\n",
                 "\n",
-                "<span style=\"text-decoration:underline\">**Green | 1.5% MoM Growth Rate**</span> - This estimate of 1.5% smoothed month-over-month growth of the Gap Data Platform (GDP) was what was used to form the initial estimate of \\~41 million consumption over a 5-year period after removing a 42% platform discount.\n",
+                "<span style=\"text-decoration:underline\">**Green | 1.5% MoM Growth Rate**</span> - This estimate of 1.5% smoothed month-over-month growth of the HEB Data Platform (GDP) was what was used to form the initial estimate of \\~41 million consumption over a 5-year period after removing a 42% platform discount.\n",
                 "\n",
                 "<span style=\"text-decoration:underline\">**Red | Actual Trend Line**</span> - This trend line was calculated using actual spend, i.e. the blue bars above, to fit a real trend line based on historical data. Understanding that there were initial initiatives that increased consumption, **overall consumption has been decreasing considerably over time as a percentage:&#32;**\n",
                 "\n",
@@ -702,8 +702,8 @@
                       "expression": "`YearMonth`"
                     },
                     {
-                      "name": "sum(total_gap_usd)",
-                      "expression": "SUM(`total_gap_usd`)"
+                      "name": "sum(total_heb_usd)",
+                      "expression": "SUM(`total_heb_usd`)"
                     }
                   ],
                   "disaggregated": false
@@ -724,7 +724,7 @@
                   }
                 },
                 "y": {
-                  "fieldName": "sum(total_gap_usd)",
+                  "fieldName": "sum(total_heb_usd)",
                   "scale": {
                     "type": "quantitative"
                   },
@@ -753,7 +753,7 @@
               },
               "frame": {
                 "showTitle": true,
-                "title": "Total Gap Spend by Workspace",
+                "title": "Total HEB Spend by Workspace",
                 "showDescription": true,
                 "description": "Select Individul Items Using Legend (Use ⌘ to Select Multiple At Once)"
               }
@@ -784,8 +784,8 @@
                       "expression": "`YearMonth`"
                     },
                     {
-                      "name": "total_gap_usd",
-                      "expression": "`total_gap_usd`"
+                      "name": "total_heb_usd",
+                      "expression": "`total_heb_usd`"
                     },
                     {
                       "name": "avg_percent_growth_last_3_months",
@@ -854,7 +854,7 @@
                     "preserveWhitespace": false
                   },
                   {
-                    "fieldName": "total_gap_usd",
+                    "fieldName": "total_heb_usd",
                     "numberFormat": "$0,000.00",
                     "booleanValues": [
                       "false",
@@ -872,7 +872,7 @@
                     "displayAs": "number",
                     "visible": true,
                     "order": 3,
-                    "title": "Total Gap Spend (USD)",
+                    "title": "Total HEB Spend (USD)",
                     "allowSearch": false,
                     "alignContent": "right",
                     "allowHTML": false,
@@ -886,7 +886,7 @@
                       "rules": [
                         {
                           "if": {
-                            "column": "total_gap_usd",
+                            "column": "total_heb_usd",
                             "fn": "=",
                             "literal": ""
                           },
@@ -1231,11 +1231,11 @@
                   "linkTextTemplate": "{{ @ }}",
                   "linkTitleTemplate": "{{ @ }}",
                   "linkOpenInNewTab": true,
-                  "name": "total_gap_usd",
+                  "name": "total_heb_usd",
                   "type": "decimal",
                   "displayAs": "number",
                   "order": 100004,
-                  "title": "total_gap_usd",
+                  "title": "total_heb_usd",
                   "allowSearch": false,
                   "alignContent": "right",
                   "allowHTML": false,
@@ -1433,13 +1433,13 @@
                       "name": "workspace_name",
                       "expression": "`workspace_name`"
                     },
-                    {
+                    { 
                       "name": "job_id",
                       "expression": "`job_id`"
                     },
                     {
-                      "name": "gap_cost",
-                      "expression": "`gap_cost`"
+                      "name": "heb_cost",
+                      "expression": "`heb_cost`"
                     },
                     {
                       "name": "runs",
@@ -1524,7 +1524,7 @@
                     "preserveWhitespace": false
                   },
                   {
-                    "fieldName": "gap_cost",
+                    "fieldName": "heb_cost",
                     "numberFormat": "$0,000.00",
                     "booleanValues": [
                       "false",
@@ -1542,7 +1542,7 @@
                     "displayAs": "number",
                     "visible": true,
                     "order": 2,
-                    "title": "Cost to Gap",
+                    "title": "Cost to HEB",
                     "allowSearch": false,
                     "alignContent": "right",
                     "allowHTML": false,
@@ -1767,8 +1767,8 @@
                   "datasetName": "a24fd9b3",
                   "fields": [
                     {
-                      "name": "sum(gap_cost)",
-                      "expression": "SUM(`gap_cost`)"
+                      "name": "sum(heb_cost)",
+                      "expression": "SUM(`heb_cost`)"
                     }
                   ],
                   "filters": [
@@ -1785,7 +1785,7 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "sum(gap_cost)",
+                  "fieldName": "sum(heb_cost)",
                   "style": {
                     "color": {
                       "themeColorType": "visualizationColors",
@@ -1817,8 +1817,8 @@
                   "datasetName": "a24fd9b3",
                   "fields": [
                     {
-                      "name": "sum(gap_cost)",
-                      "expression": "SUM(`gap_cost`)"
+                      "name": "sum(heb_cost)",
+                      "expression": "SUM(`heb_cost`)"
                     }
                   ],
                   "disaggregated": false
@@ -1830,7 +1830,7 @@
               "widgetType": "counter",
               "encodings": {
                 "value": {
-                  "fieldName": "sum(gap_cost)"
+                  "fieldName": "sum(heb_cost)"
                 }
               },
               "frame": {
@@ -1897,17 +1897,17 @@
             "name": "441baf6d",
             "queries": [
               {
-                "name": "dashboards/01f092867acf12368dcf20f6f1c42dac/datasets/01f09f2a965d1d698e0c5d74bbee0684_gap_cost",
+                "name": "dashboards/01f092867acf12368dcf20f6f1c42dac/datasets/01f09f2a965d1d698e0c5d74bbee0684_heb_cost",
                 "query": {
                   "datasetName": "a24fd9b3",
                   "fields": [
                     {
-                      "name": "min(gap_cost)",
-                      "expression": "MIN(`gap_cost`)"
+                      "name": "min(heb_cost)",
+                      "expression": "MIN(`heb_cost`)"
                     },
                     {
-                      "name": "max(gap_cost)",
-                      "expression": "MAX(`gap_cost`)"
+                      "name": "max(heb_cost)",
+                      "expression": "MAX(`heb_cost`)"
                     }
                   ],
                   "disaggregated": false
@@ -1920,14 +1920,14 @@
               "encodings": {
                 "fields": [
                   {
-                    "fieldName": "gap_cost",
-                    "queryName": "dashboards/01f092867acf12368dcf20f6f1c42dac/datasets/01f09f2a965d1d698e0c5d74bbee0684_gap_cost"
+                    "fieldName": "heb_cost",
+                    "queryName": "dashboards/01f092867acf12368dcf20f6f1c42dac/datasets/01f09f2a965d1d698e0c5d74bbee0684_heb_cost"
                   }
                 ]
               },
               "frame": {
                 "showTitle": true,
-                "title": "Cost to Gap"
+                "title": "Cost to HEB"
               }
             }
           },
@@ -1964,8 +1964,8 @@
                       "expression": "`run_id`"
                     },
                     {
-                      "name": "gap_cost",
-                      "expression": "`gap_cost`"
+                      "name": "heb_cost",
+                      "expression": "`heb_cost`"
                     },
                     {
                       "name": "name",
@@ -2091,7 +2091,7 @@
                     "preserveWhitespace": false
                   },
                   {
-                    "fieldName": "gap_cost",
+                    "fieldName": "heb_cost",
                     "numberFormat": "$0,000.00",
                     "booleanValues": [
                       "false",
@@ -2207,7 +2207,7 @@
                 "showTitle": true,
                 "title": "Cost by Single Job Run",
                 "showDescription": true,
-                "description": "List of highest costs incurred by Gap for a single run in the past 30 days"
+                "description": "List of highest costs incurred by HEB for a single run in the past 30 days"
               }
             }
           },
@@ -2239,8 +2239,8 @@
                       "expression": "DATE_TRUNC(\"MONTH\", `ds`)"
                     },
                     {
-                      "name": "total_gap_usd",
-                      "expression": "`total_gap_usd`"
+                      "name": "total_heb_usd",
+                      "expression": "`total_heb_usd`"
                     },
                     {
                       "name": "yhat",
@@ -2282,7 +2282,7 @@
                   "primary": {
                     "fields": [
                       {
-                        "fieldName": "total_gap_usd",
+                        "fieldName": "total_heb_usd",
                         "displayName": "    Actual Consumption"
                       }
                     ]
@@ -2301,7 +2301,7 @@
                 }
               },
               "frame": {
-                "title": "Total Gap Consumption",
+                "title": "Total HEB Consumption",
                 "showTitle": true,
                 "showDescription": true,
                 "description": "Measured by Aggregating Spend Across All Workspaces"
@@ -2388,8 +2388,8 @@
                       "expression": "`YearMonth`"
                     },
                     {
-                      "name": "total_gap_usd",
-                      "expression": "`total_gap_usd`"
+                      "name": "total_heb_usd",
+                      "expression": "`total_heb_usd`"
                     },
                     {
                       "name": "yhat",
@@ -2441,7 +2441,7 @@
                     "preserveWhitespace": false
                   },
                   {
-                    "fieldName": "total_gap_usd",
+                    "fieldName": "total_heb_usd",
                     "numberFormat": "$0,000.00",
                     "booleanValues": [
                       "false",
@@ -2747,9 +2747,9 @@
                 "### Conclusion\n",
                 "<p>&nbsp;</p>\n",
                 "\n",
-                "We find that the costs to Gap were increasing significantly over the time period pre-Aug. 2024, much above the initial expected growth rate of 1.5% set out in the initial 5-year plan. After the optimization efforts were undertaken, the consumption costs undertaken by Gap were actually stalled/decreased below the 1.5% growth rate in the 12 month period immediately following the intervention.\n",
+                "We find that the costs to HEB were increasing significantly over the time period pre-Aug. 2024, much above the initial expected growth rate of 1.5% set out in the initial 5-year plan. After the optimization efforts were undertaken, the consumption costs undertaken by HEB were actually stalled/decreased below the 1.5% growth rate in the 12 month period immediately following the intervention.\n",
                 "\n",
-                "By calculating the difference between the red forecast line (\"the track that Gap was going on\") and the true cost shown as a blue bar graph (\"what actually occurred\"), we estimate a savings of 5 million dollars to Gap over this time period. "
+                "By calculating the difference between the red forecast line (\"the track that HEB was going on\") and the true cost shown as a blue bar graph (\"what actually occurred\"), we estimate a savings of 5 million dollars to HEB over this time period. "
               ]
             }
           },
