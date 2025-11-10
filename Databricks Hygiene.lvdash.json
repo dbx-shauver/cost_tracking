@@ -1,0 +1,2772 @@
+{
+  "datasets": [
+    {
+      "name": "2533a643",
+      "displayName": "workspace_costs",
+      "queryLines": [
+        "select\n",
+        "  date_format(date_trunc('month', u.usage_date), 'yyyy-MM') as YearMonth,\n",
+        "  u.workspace_id,\n",
+        "  w.workspace_name,\n",
+        "  sum(u.usage_quantity * lp.pricing.default) as total_list_usd,\n",
+        "  sum(u.usage_quantity * lp.pricing.default) * 0.58 as total_gap_usd,\n",
+        "  case \n",
+        "    when exists (\n",
+        "      select 1 \n",
+        "      from system.billing.usage u_prev\n",
+        "      where u_prev.workspace_id = u.workspace_id\n",
+        "        and date_format(date_trunc('month', u_prev.usage_date), 'yyyy-MM') = \n",
+        "            date_format(date_trunc('month', current_date - interval 1 month), 'yyyy-MM')\n",
+        "    ) then true\n",
+        "    else false\n",
+        "  end as used_last_month\n",
+        "from system.billing.usage u\n",
+        "inner join system.access.workspaces_latest w \n",
+        "  on u.workspace_id = w.workspace_id\n",
+        "left join system.billing.list_prices lp\n",
+        "    on u.sku_name = lp.sku_name\n",
+        "    and u.cloud = lp.cloud\n",
+        "    and u.usage_unit = lp.usage_unit\n",
+        "    and u.usage_end_time >= lp.price_start_time\n",
+        "    and (lp.price_end_time is null or u.usage_end_time < lp.price_end_time)\n",
+        "    and lp.currency_code = 'USD'\n",
+        "group by YearMonth, u.workspace_id, w.workspace_name\n",
+        "having sum(u.usage_quantity * lp.pricing.default) * 0.58 >= 600\n",
+        "order by YearMonth, w.workspace_name, total_list_usd desc\n"
+      ]
+    },
+    {
+      "name": "6481b773",
+      "displayName": "increasing_cost_workspaces",
+      "queryLines": [
+        "with monthly_spend as (\n",
+        "  select\n",
+        "    date_format(date_trunc('month', u.usage_date), 'yyyy-MM') as YearMonth,\n",
+        "    u.workspace_id,\n",
+        "    w.workspace_name,\n",
+        "    sum(u.usage_quantity * lp.pricing.default) as total_list_usd,\n",
+        "    sum(u.usage_quantity * lp.pricing.default) * 0.58 as total_gap_usd\n",
+        "  from system.billing.usage u\n",
+        "  inner join system.access.workspaces_latest w \n",
+        "    on u.workspace_id = w.workspace_id\n",
+        "  left join system.billing.list_prices lp\n",
+        "      on u.sku_name = lp.sku_name\n",
+        "      and u.cloud = lp.cloud\n",
+        "      and u.usage_unit = lp.usage_unit\n",
+        "      and u.usage_end_time >= lp.price_start_time\n",
+        "      and (lp.price_end_time is null or u.usage_end_time < lp.price_end_time)\n",
+        "      and lp.currency_code = 'USD'\n",
+        "  group by YearMonth, u.workspace_id, w.workspace_name\n",
+        "),\n",
+        "last_three_months as (\n",
+        "  select *\n",
+        "  from monthly_spend\n",
+        "  where YearMonth >= date_format(add_months(current_date(), -2), 'yyyy-MM')\n",
+        "    and total_gap_usd >= 500\n",
+        "),\n",
+        "ranked as (\n",
+        "  select\n",
+        "    workspace_id,\n",
+        "    workspace_name,\n",
+        "    YearMonth,\n",
+        "    total_list_usd,\n",
+        "    total_gap_usd,\n",
+        "    row_number() over (partition by workspace_id order by YearMonth) as rn\n",
+        "  from last_three_months\n",
+        ")\n",
+        "select\n",
+        "  r1.YearMonth,\n",
+        "  r1.workspace_id,\n",
+        "  r1.workspace_name,\n",
+        "  r1.total_list_usd,\n",
+        "  r1.total_gap_usd,\n",
+        "  ((r1.total_gap_usd - r3.total_gap_usd) / r3.total_gap_usd) / 2 * 100 as avg_percent_growth_last_3_months\n",
+        "from ranked r1\n",
+        "join ranked r2 on r1.workspace_id = r2.workspace_id and r1.rn = 2 and r2.rn = 1\n",
+        "join ranked r3 on r1.workspace_id = r3.workspace_id and r3.rn = 3\n",
+        "where\n",
+        "  r2.total_list_usd > r3.total_list_usd\n",
+        "  and r1.total_list_usd > r2.total_list_usd\n",
+        "  and r1.total_gap_usd >= 500\n",
+        "order by r1.YearMonth, r1.total_list_usd desc"
+      ],
+      "catalog": "system",
+      "schema": "__internal_logging"
+    },
+    {
+      "name": "80987376",
+      "displayName": "5_yr_forecast_orig",
+      "queryLines": [
+        "SELECT\n",
+        "  YearMonth,\n",
+        "  -- 5 yr forecast line includes trend line for 1.5% growth rate + 4.6m in planned migrations\n",
+        "  ( ((269258.23+77700)*1.02) * POWER(1.015, (CAST(SUBSTR(YearMonth, 1, 4) AS INTEGER) - 2022) * 12 + (CAST(SUBSTR(YearMonth, 6, 2) AS INTEGER) - 1))) AS five_yr_forecast_line,\n",
+        "  SUM(u.usage_quantity * lp.pricing.default) AS total_list_usd,\n",
+        "  SUM(u.usage_quantity * lp.pricing.default) * 0.58 AS total_gap_usd\n",
+        "FROM (\n",
+        "  SELECT\n",
+        "    date_format(date_trunc('month', u.usage_date), 'yyyy-MM') AS YearMonth,\n",
+        "    u.usage_quantity,\n",
+        "    u.sku_name,\n",
+        "    u.cloud,\n",
+        "    u.usage_unit,\n",
+        "    u.usage_end_time\n",
+        "  FROM system.billing.usage u\n",
+        ") u\n",
+        "LEFT JOIN system.billing.list_prices lp\n",
+        "  ON u.sku_name = lp.sku_name\n",
+        "  AND u.cloud = lp.cloud\n",
+        "  AND u.usage_unit = lp.usage_unit\n",
+        "  AND u.usage_end_time >= lp.price_start_time\n",
+        "  AND (lp.price_end_time IS NULL OR u.usage_end_time < lp.price_end_time)\n",
+        "  AND lp.currency_code = 'USD'\n",
+        "GROUP BY YearMonth\n",
+        "HAVING SUM(u.usage_quantity * lp.pricing.default) * 0.58 >= 600\n",
+        "ORDER BY YearMonth\n"
+      ]
+    },
+    {
+      "name": "14884140",
+      "displayName": "5_yr_and_prophet_added",
+      "queryLines": [
+        "WITH forecast AS (\n",
+        "  SELECT\n",
+        "    YearMonth,\n",
+        "    (((269258.23+77700)*1.02) * POWER(1.015, (CAST(SUBSTR(YearMonth, 1, 4) AS INTEGER) - 2022) * 12 + (CAST(SUBSTR(YearMonth, 6, 2) AS INTEGER) - 1))) AS five_yr_forecast_line,\n",
+        "    20259.89 * (ROW_NUMBER() OVER (ORDER BY YearMonth) - 1) + 454105.38 AS trend_value,\n",
+        "    SUM(u.usage_quantity * lp.pricing.default) AS total_list_usd,\n",
+        "    SUM(u.usage_quantity * lp.pricing.default) * 0.58 AS total_gap_usd\n",
+        "  FROM (\n",
+        "    SELECT\n",
+        "      date_format(date_trunc('month', u.usage_date), 'yyyy-MM') AS YearMonth,\n",
+        "      u.usage_quantity,\n",
+        "      u.sku_name,\n",
+        "      u.cloud,\n",
+        "      u.usage_unit,\n",
+        "      u.usage_end_time\n",
+        "    FROM system.billing.usage u\n",
+        "  ) u\n",
+        "  LEFT JOIN system.billing.list_prices lp\n",
+        "    ON u.sku_name = lp.sku_name\n",
+        "    AND u.cloud = lp.cloud\n",
+        "    AND u.usage_unit = lp.usage_unit\n",
+        "    AND u.usage_end_time >= lp.price_start_time\n",
+        "    AND (lp.price_end_time IS NULL OR u.usage_end_time < lp.price_end_time)\n",
+        "    AND lp.currency_code = 'USD'\n",
+        "  GROUP BY YearMonth\n",
+        "  HAVING SUM(u.usage_quantity * lp.pricing.default) * 0.58 >= 600\n",
+        ")\n",
+        "SELECT\n",
+        "  f.*,\n",
+        "  v3.*\n",
+        "FROM forecast f\n",
+        "LEFT JOIN gdp_stage.default.v_4_consumption_data v3\n",
+        "  ON f.YearMonth = LEFT(v3.ds, 7) -- assumes `v3.ds` is something like '2023-08-01...'\n",
+        "ORDER BY f.YearMonth\n"
+      ]
+    },
+    {
+      "name": "62401fbe",
+      "displayName": "jobs_analysis_JobsPerMonth",
+      "queryLines": [
+        "select\n",
+        "   date_format(change_time, 'yyyy MM') as YearMonth\n",
+        "  ,count(*) as CountOfJobs\n",
+        "from system.lakeflow.jobs\n",
+        "group by date_format(change_time, 'yyyy MM')\n",
+        "order by date_format(change_time, 'yyyy MM')"
+      ],
+      "catalog": "system",
+      "schema": "lakeflow"
+    },
+    {
+      "name": "910bf1d8",
+      "displayName": "jobs_analysis_JobsRunsPerWeek",
+      "queryLines": [
+        "select \n",
+        "  concat(\n",
+        "    cast(extract(year from period_start_time) as string), \n",
+        "    '-', \n",
+        "    lpad(cast(extract(week from period_start_time) as string), 2, '0')\n",
+        "  ) as week,\n",
+        "  count(*) as job_runs\n",
+        "from system.lakeflow.job_run_timeline\n",
+        "group by \n",
+        "  extract(year from period_start_time), \n",
+        "  extract(week from period_start_time)\n",
+        "order by week"
+      ],
+      "catalog": "system",
+      "schema": "lakeflow"
+    },
+    {
+      "name": "a24fd9b3",
+      "displayName": "most_expensive_jobs_30_days",
+      "queryLines": [
+        "with list_cost_per_job as (\n",
+        "  SELECT\n",
+        "    t1.workspace_id,\n",
+        "    t1.usage_metadata.job_id,\n",
+        "    COUNT(DISTINCT t1.usage_metadata.job_run_id) as runs,\n",
+        "    SUM(t1.usage_quantity * list_prices.pricing.default) as list_cost,\n",
+        "    first(identity_metadata.run_as, true) as run_as,\n",
+        "    first(t1.custom_tags, true) as custom_tags,\n",
+        "    MAX(t1.usage_end_time) as last_seen_date\n",
+        "  FROM system.billing.usage t1 \n",
+        "  INNER JOIN system.billing.list_prices list_prices on\n",
+        "    t1.cloud = list_prices.cloud and\n",
+        "    t1.sku_name = list_prices.sku_name and\n",
+        "    t1.usage_start_time >= list_prices.price_start_time and\n",
+        "    (t1.usage_end_time <= list_prices.price_end_time or list_prices.price_end_time is null)\n",
+        "  WHERE\n",
+        "    t1.sku_name LIKE '%JOBS%'\n",
+        "    AND t1.usage_metadata.job_id IS NOT NULL\n",
+        "    AND t1.usage_date >= CURRENT_DATE() - INTERVAL 30 DAY \n",
+        "  GROUP BY ALL\n",
+        "),\n",
+        "most_recent_jobs as (\n",
+        "  SELECT \n",
+        "    *, \n",
+        "    ROW_NUMBER() OVER(PARTITION BY workspace_id, job_id ORDER BY change_time DESC) as rn\n",
+        "  FROM\n",
+        "    system.workflow.jobs QUALIFY rn=1\n",
+        "),\n",
+        "final_results as (\n",
+        "  SELECT \n",
+        "      t3.workspace_name,\n",
+        "      t2.name as job_name,\n",
+        "      t1.job_id,\n",
+        "      t1.workspace_id,\n",
+        "      t1.runs,\n",
+        "      t1.run_as,\n",
+        "      SUM(list_cost) as list_cost,\n",
+        "      SUM(list_cost*.58) as gap_cost,\n",
+        "      t1.last_seen_date\n",
+        "  FROM list_cost_per_job t1 \n",
+        "    LEFT JOIN most_recent_jobs t2 USING (workspace_id, job_id)\n",
+        "    LEFT JOIN system.access.workspaces_latest t3 USING (workspace_id)\n",
+        "  GROUP BY ALL\n",
+        ")\n",
+        "SELECT \n",
+        "    *,\n",
+        "    CASE \n",
+        "      WHEN ROW_NUMBER() OVER (ORDER BY list_cost DESC) <= 5 THEN true \n",
+        "      ELSE false \n",
+        "    END as is_top_5_job\n",
+        "FROM final_results\n",
+        "ORDER BY list_cost DESC"
+      ]
+    },
+    {
+      "name": "9e21058c",
+      "displayName": "aug_2024_optimization_results",
+      "queryLines": [
+        "SELECT *,\n",
+        "       ABS(difference) \n",
+        "FROM main.billing_forecast_demo.aug_2024_optimization_results"
+      ]
+    },
+    {
+      "name": "eebb1838",
+      "displayName": "forecast_next_12_period_v3",
+      "queryLines": [
+        "SELECT * FROM main.billing_forecast_demo.forecast_next_12_period_v3\n",
+        "\n",
+        "-- select * from gdp_stage.default.v_4_consumption_data v3"
+      ]
+    },
+    {
+      "name": "8fece4db",
+      "displayName": "5_yr_and_prophet_added_plus_forecast",
+      "queryLines": [
+        "WITH forecast AS (\n",
+        "  SELECT\n",
+        "    YearMonth,\n",
+        "    (((269258.23+77700)*1.02) * POWER(1.015, (CAST(SUBSTR(YearMonth, 1, 4) AS INTEGER) - 2022) * 12 + (CAST(SUBSTR(YearMonth, 6, 2) AS INTEGER) - 1))) AS five_yr_forecast_line,\n",
+        "    20259.89 * (ROW_NUMBER() OVER (ORDER BY YearMonth) - 1) + 454105.38 AS trend_value,\n",
+        "    SUM(u.usage_quantity * lp.pricing.default) AS total_list_usd,\n",
+        "    SUM(u.usage_quantity * lp.pricing.default) * 0.58 AS total_gap_usd\n",
+        "  FROM (\n",
+        "    SELECT\n",
+        "      date_format(date_trunc('month', u.usage_date), 'yyyy-MM') AS YearMonth,\n",
+        "      u.usage_quantity,\n",
+        "      u.sku_name,\n",
+        "      u.cloud,\n",
+        "      u.usage_unit,\n",
+        "      u.usage_end_time\n",
+        "    FROM system.billing.usage u\n",
+        "  ) u\n",
+        "  LEFT JOIN system.billing.list_prices lp\n",
+        "    ON u.sku_name = lp.sku_name\n",
+        "    AND u.cloud = lp.cloud\n",
+        "    AND u.usage_unit = lp.usage_unit\n",
+        "    AND u.usage_end_time >= lp.price_start_time\n",
+        "    AND (lp.price_end_time IS NULL OR u.usage_end_time < lp.price_end_time)\n",
+        "    AND lp.currency_code = 'USD'\n",
+        "  GROUP BY YearMonth\n",
+        "  HAVING SUM(u.usage_quantity * lp.pricing.default) * 0.58 >= 600\n",
+        ")\n",
+        "\n",
+        "SELECT\n",
+        "  f.YearMonth,\n",
+        "  f.five_yr_forecast_line,\n",
+        "  f.trend_value,\n",
+        "  f.total_list_usd,\n",
+        "  f.total_gap_usd,\n",
+        "  v3.yhat_y,\n",
+        "  CASE \n",
+        "    WHEN f.YearMonth >= '2025-10' THEN (f.trend_value + COALESCE(v3.yhat_y, 0)) / 2\n",
+        "    ELSE NULL \n",
+        "  END AS projected_consumption\n",
+        "FROM forecast f\n",
+        "LEFT JOIN main.billing_forecast_demo.forecast_next_12_period_v3 v3\n",
+        "  ON f.YearMonth = LEFT(v3.ds, 7)\n",
+        "\n",
+        "UNION ALL\n",
+        "\n",
+        "SELECT\n",
+        "  LEFT(v3.ds, 7) AS YearMonth,\n",
+        "  (((269258.23+77700)*1.02) * POWER(1.015, (CAST(SUBSTR(LEFT(v3.ds, 7), 1, 4) AS INTEGER) - 2022) * 12 + (CAST(SUBSTR(LEFT(v3.ds, 7), 6, 2) AS INTEGER) - 1))) AS five_yr_forecast_line,\n",
+        "  20259.89 * ((SELECT COUNT(*) FROM forecast) + ROW_NUMBER() OVER (ORDER BY LEFT(v3.ds, 7)) - 1) + 454105.38 AS trend_value,\n",
+        "  NULL AS total_list_usd,\n",
+        "  NULL AS total_gap_usd,\n",
+        "  v3.yhat_y,\n",
+        "  CASE \n",
+        "    WHEN LEFT(v3.ds, 7) >= '2025-10' THEN (20259.89 * ((SELECT COUNT(*) FROM forecast) + ROW_NUMBER() OVER (ORDER BY LEFT(v3.ds, 7)) - 1) + 454105.38 + COALESCE(v3.yhat_y, 0)) / 2\n",
+        "    ELSE NULL \n",
+        "  END AS projected_consumption\n",
+        "FROM main.billing_forecast_demo.forecast_next_12_period_v3 v3\n",
+        "WHERE LEFT(v3.ds, 7) NOT IN (SELECT YearMonth FROM forecast)\n",
+        "\n",
+        "ORDER BY YearMonth\n"
+      ]
+    },
+    {
+      "name": "0e674c70",
+      "displayName": "most_expensive_runs_last_30_days",
+      "queryLines": [
+        "with list_cost_per_job_run as (\n",
+        "  SELECT\n",
+        "    t1.workspace_id,\n",
+        "    t1.usage_metadata.job_id,\n",
+        "    t1.usage_metadata.job_run_id as run_id,\n",
+        "    SUM(t1.usage_quantity * list_prices.pricing.default) as list_cost,\n",
+        "    first(identity_metadata.run_as, true) as run_as,\n",
+        "    first(t1.custom_tags, true) as custom_tags,\n",
+        "    MAX(t1.usage_end_time) as last_seen_date\n",
+        "  FROM system.billing.usage t1 \n",
+        "  INNER JOIN system.billing.list_prices list_prices on\n",
+        "    t1.cloud = list_prices.cloud and\n",
+        "    t1.sku_name = list_prices.sku_name and\n",
+        "    t1.usage_start_time >= list_prices.price_start_time and\n",
+        "    (t1.usage_end_time <= list_prices.price_end_time or list_prices.price_end_time is null)\n",
+        "  WHERE\n",
+        "    t1.sku_name LIKE '%JOBS%'\n",
+        "    AND t1.usage_metadata.job_id IS NOT NULL\n",
+        "    AND t1.usage_metadata.job_run_id IS NOT NULL\n",
+        "    AND t1.usage_date >= CURRENT_DATE() - INTERVAL 30 DAY \n",
+        "  GROUP BY ALL\n",
+        "),\n",
+        "\n",
+        "most_recent_jobs as (\n",
+        "  SELECT \n",
+        "    *, \n",
+        "    ROW_NUMBER() OVER(PARTITION BY workspace_id, job_id ORDER BY change_time DESC) as rn\n",
+        "  FROM\n",
+        "    system.workflow.jobs QUALIFY rn=1\n",
+        ")\n",
+        "SELECT \n",
+        "    t1.workspace_id,\n",
+        "    t2.name,\n",
+        "    t1.job_id,\n",
+        "    t1.run_id,\n",
+        "    t1.run_as,\n",
+        "    SUM(list_cost) as list_cost,\n",
+        "    SUM(list_cost)*.58 as gap_cost,\n",
+        "    t1.last_seen_date\n",
+        "FROM list_cost_per_job_run t1 \n",
+        "  LEFT JOIN most_recent_jobs t2 USING (workspace_id, job_id)\n",
+        "GROUP BY ALL\n",
+        "ORDER BY list_cost DESC"
+      ]
+    },
+    {
+      "name": "92d0e21e",
+      "displayName": "dbu_usage",
+      "queryLines": [
+        "SELECT\n",
+        "  DATE_TRUNC('MONTH', usage_start_time) AS month,\n",
+        "  SUM(usage_quantity) AS total_dbu_usage\n",
+        "FROM\n",
+        "  system.billing.usage\n",
+        "WHERE\n",
+        "  usage_metadata.cluster_id IS NOT NULL\n",
+        "GROUP BY\n",
+        "  DATE_TRUNC('MONTH', usage_start_time)\n",
+        "ORDER BY\n",
+        "  month;"
+      ]
+    }
+  ],
+  "pages": [
+    {
+      "name": "2eb72f42",
+      "displayName": "All Workspaces",
+      "layout": [
+        {
+          "widget": {
+            "name": "d8acf60b",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "8fece4db",
+                  "fields": [
+                    {
+                      "name": "YearMonth",
+                      "expression": "`YearMonth`"
+                    },
+                    {
+                      "name": "total_gap_usd",
+                      "expression": "`total_gap_usd`"
+                    },
+                    {
+                      "name": "yhat_y",
+                      "expression": "`yhat_y`"
+                    },
+                    {
+                      "name": "five_yr_forecast_line",
+                      "expression": "`five_yr_forecast_line`"
+                    },
+                    {
+                      "name": "trend_value",
+                      "expression": "`trend_value`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "combo",
+              "encodings": {
+                "x": {
+                  "fieldName": "YearMonth",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "axis": {
+                    "hideTitle": true,
+                    "hideLabels": false
+                  }
+                },
+                "label": {
+                  "show": false
+                },
+                "color": {
+                  "legend": {
+                    "position": "bottom"
+                  }
+                },
+                "y": {
+                  "primary": {
+                    "fields": [
+                      {
+                        "fieldName": "total_gap_usd",
+                        "displayName": "    Actual Consumption"
+                      }
+                    ]
+                  },
+                  "secondary": {
+                    "fields": [
+                      {
+                        "fieldName": "yhat_y",
+                        "displayName": "Meta Prophet Model"
+                      },
+                      {
+                        "fieldName": "five_yr_forecast_line",
+                        "displayName": "1.5% MoM Growth Model"
+                      },
+                      {
+                        "fieldName": "trend_value"
+                      }
+                    ]
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "mark": {
+                "colors": [
+                  "#ABD7EB",
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 2
+                  },
+                  "#009162",
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 4
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 8
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 9
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  }
+                ]
+              },
+              "frame": {
+                "title": "Total Actual Consumption",
+                "showTitle": true,
+                "showDescription": true,
+                "description": "Measured by aggregating spend across all workspaces within the Gap Data Platform (GDP)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "653e6c07",
+            "multilineTextboxSpec": {
+              "lines": [
+                "### Forecasting Analysis\n",
+                "\n",
+                "<span style=\"text-decoration:underline\">**Green | 1.5% MoM Growth Rate**</span> - This estimate of 1.5% smoothed month-over-month growth of the Gap Data Platform (GDP) was what was used to form the initial estimate of \\~41 million consumption over a 5-year period after removing a 42% platform discount.\n",
+                "\n",
+                "<span style=\"text-decoration:underline\">**Red | Actual Trend Line**</span> - This trend line was calculated using actual spend, i.e. the blue bars above, to fit a real trend line based on historical data. Understanding that there were initial initiatives that increased consumption, **overall consumption has been decreasing considerably over time as a percentage:&#32;**\n",
+                "\n",
+                "- Early period (9/23-2/24): **4.03% average MoM growth**\n",
+                "- Middle period (6/24 - 11/24): **3.00% average MoM growth**\n",
+                "- Late period (5/25 - 9/25): **2.31% average MoM growth**\n",
+                "\n",
+                "<span style=\"text-decoration:underline\">**Yellow | Meta Prophet Model - Definition & Use Case**</span> - The forecasting model uses Facebook's Prophet algorithm trained on historical data up to the present month to predict the consumption for the next 12 months. To prepare the data for modeling, a 3-month centered moving average was applied to smooth out noise while preserving underlying trends, and extreme outliers were removed by capping values at the 1st and 99th percentiles. The model was configured to detect yearly seasonal patterns using multiplicative seasonality, which allows seasonal effects to scale proportionally with the data level (weekly and daily seasonality was not included). "
+              ]
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 8,
+            "width": 3,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "871652ff",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "8fece4db",
+                  "fields": [
+                    {
+                      "name": "YearMonth",
+                      "expression": "`YearMonth`"
+                    },
+                    {
+                      "name": "sum(projected_consumption)",
+                      "expression": "SUM(`projected_consumption`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "YearMonth",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Date"
+                },
+                "y": {
+                  "fieldName": "sum(projected_consumption)",
+                  "scale": {
+                    "type": "quantitative",
+                    "domain": {
+                      "max": 1500000
+                    }
+                  },
+                  "displayName": "Projected Consumption"
+                },
+                "label": {
+                  "show": true
+                }
+              },
+              "frame": {
+                "title": "Future Projected Consumption Next 12 Months",
+                "showTitle": true,
+                "showDescription": true,
+                "description": "Taken by averaging the actual trend line (red) with the Meta Prophet forecast (orange)"
+              },
+              "mark": {
+                "colors": [
+                  "#FFBF3C",
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 2
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 3
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 4
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 5
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 6
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 7
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 8
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 9
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 3,
+            "height": 7
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "name": "54b14b28",
+      "displayName": "Global Filters",
+      "pageType": "PAGE_TYPE_GLOBAL_FILTERS"
+    },
+    {
+      "name": "87817fb2",
+      "displayName": "By Workspace",
+      "layout": [
+        {
+          "widget": {
+            "name": "edb9211a",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "2533a643",
+                  "fields": [
+                    {
+                      "name": "workspace_name",
+                      "expression": "`workspace_name`"
+                    },
+                    {
+                      "name": "YearMonth",
+                      "expression": "`YearMonth`"
+                    },
+                    {
+                      "name": "sum(total_gap_usd)",
+                      "expression": "SUM(`total_gap_usd`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 3,
+              "widgetType": "bar",
+              "encodings": {
+                "x": {
+                  "fieldName": "YearMonth",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "axis": {
+                    "title": "Year & Month"
+                  }
+                },
+                "y": {
+                  "fieldName": "sum(total_gap_usd)",
+                  "scale": {
+                    "type": "quantitative"
+                  },
+                  "axis": {
+                    "title": "Total Spend with Discount"
+                  }
+                },
+                "color": {
+                  "fieldName": "workspace_name",
+                  "scale": {
+                    "type": "categorical",
+                    "sort": {
+                      "by": "natural-order"
+                    }
+                  },
+                  "legend": {
+                    "title": "Workspace Name",
+                    "hide": false,
+                    "hideTitle": false,
+                    "position": "right"
+                  }
+                },
+                "label": {
+                  "show": true
+                }
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Total Gap Spend by Workspace",
+                "showDescription": true,
+                "description": "Select Individul Items Using Legend (Use ⌘ to Select Multiple At Once)"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "2d42e8cf",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "6481b773",
+                  "fields": [
+                    {
+                      "name": "workspace_name",
+                      "expression": "`workspace_name`"
+                    },
+                    {
+                      "name": "YearMonth",
+                      "expression": "`YearMonth`"
+                    },
+                    {
+                      "name": "total_gap_usd",
+                      "expression": "`total_gap_usd`"
+                    },
+                    {
+                      "name": "avg_percent_growth_last_3_months",
+                      "expression": "`avg_percent_growth_last_3_months`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "workspace_name",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 0,
+                    "title": "Workspace Name",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "YearMonth",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 1,
+                    "title": "Month",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "total_gap_usd",
+                    "numberFormat": "$0,000.00",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "decimal",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 3,
+                    "title": "Total Gap Spend (USD)",
+                    "allowSearch": false,
+                    "alignContent": "right",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false,
+                    "cellFormat": {
+                      "default": {
+                        "foregroundColor": null
+                      },
+                      "rules": [
+                        {
+                          "if": {
+                            "column": "total_gap_usd",
+                            "fn": "=",
+                            "literal": ""
+                          },
+                          "value": {
+                            "foregroundColor": null
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "fieldName": "avg_percent_growth_last_3_months",
+                    "numberFormat": "%0,000.00",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "decimal",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 4,
+                    "title": "Avg. Growth (%)",
+                    "allowSearch": false,
+                    "alignContent": "right",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  }
+                ]
+              },
+              "invisibleColumns": [
+                {
+                  "booleanValues": [
+                    "false",
+                    "true"
+                  ],
+                  "imageUrlTemplate": "{{ @ }}",
+                  "imageTitleTemplate": "{{ @ }}",
+                  "imageWidth": "",
+                  "imageHeight": "",
+                  "linkUrlTemplate": "{{ @ }}",
+                  "linkTextTemplate": "{{ @ }}",
+                  "linkTitleTemplate": "{{ @ }}",
+                  "linkOpenInNewTab": true,
+                  "name": "total_list_usd",
+                  "type": "decimal",
+                  "displayAs": "number",
+                  "order": 2,
+                  "title": "total_list_usd",
+                  "allowSearch": false,
+                  "alignContent": "right",
+                  "allowHTML": false,
+                  "highlightLinks": false,
+                  "useMonospaceFont": false,
+                  "preserveWhitespace": false
+                },
+                {
+                  "booleanValues": [
+                    "false",
+                    "true"
+                  ],
+                  "imageUrlTemplate": "{{ @ }}",
+                  "imageTitleTemplate": "{{ @ }}",
+                  "imageWidth": "",
+                  "imageHeight": "",
+                  "linkUrlTemplate": "{{ @ }}",
+                  "linkTextTemplate": "{{ @ }}",
+                  "linkTitleTemplate": "{{ @ }}",
+                  "linkOpenInNewTab": true,
+                  "name": "workspace_id",
+                  "type": "string",
+                  "displayAs": "string",
+                  "order": 5,
+                  "title": "Workspace ID",
+                  "allowSearch": false,
+                  "alignContent": "left",
+                  "allowHTML": false,
+                  "highlightLinks": false,
+                  "useMonospaceFont": false,
+                  "preserveWhitespace": false
+                }
+              ],
+              "allowHTMLByDefault": false,
+              "itemsPerPage": 25,
+              "paginationSize": "default",
+              "condensed": true,
+              "withRowNumber": false,
+              "frame": {
+                "showTitle": true,
+                "title": "Workspaces with Highest Growth in Usage Last Month"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 3,
+            "height": 4
+          }
+        },
+        {
+          "widget": {
+            "name": "177e5612",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "2533a643",
+                  "fields": [
+                    {
+                      "name": "countdistinct(workspace_id)",
+                      "expression": "COUNT(DISTINCT `workspace_id`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "countdistinct(workspace_id)",
+                  "displayName": "Count of Unique workspace_id"
+                }
+              },
+              "frame": {
+                "title": "Total Workspaces",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 8,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "4ce803bb",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "2533a643",
+                  "fields": [
+                    {
+                      "name": "countdistinct(workspace_id)",
+                      "expression": "COUNT(DISTINCT `workspace_id`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`used_last_month` IN (TRUE)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "countdistinct(workspace_id)",
+                  "displayName": "Count of Unique workspace_id"
+                }
+              },
+              "frame": {
+                "title": "Workspaces Active Last Month",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 10,
+            "width": 1,
+            "height": 2
+          }
+        },
+        {
+          "widget": {
+            "name": "cc8c5c2b",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "2533a643",
+                  "fields": [
+                    {
+                      "name": "YearMonth",
+                      "expression": "`YearMonth`"
+                    },
+                    {
+                      "name": "workspace_name",
+                      "expression": "`workspace_name`"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`used_last_month` IN (FALSE)"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "YearMonth",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 100000,
+                    "title": "Date",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "workspace_name",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 100002,
+                    "title": "Workspace Name",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  }
+                ]
+              },
+              "invisibleColumns": [
+                {
+                  "booleanValues": [
+                    "false",
+                    "true"
+                  ],
+                  "imageUrlTemplate": "{{ @ }}",
+                  "imageTitleTemplate": "{{ @ }}",
+                  "imageWidth": "",
+                  "imageHeight": "",
+                  "linkUrlTemplate": "{{ @ }}",
+                  "linkTextTemplate": "{{ @ }}",
+                  "linkTitleTemplate": "{{ @ }}",
+                  "linkOpenInNewTab": true,
+                  "name": "workspace_id",
+                  "type": "string",
+                  "displayAs": "string",
+                  "order": 100001,
+                  "title": "workspace_id",
+                  "allowSearch": false,
+                  "alignContent": "left",
+                  "allowHTML": false,
+                  "highlightLinks": false,
+                  "useMonospaceFont": false,
+                  "preserveWhitespace": false
+                },
+                {
+                  "booleanValues": [
+                    "false",
+                    "true"
+                  ],
+                  "imageUrlTemplate": "{{ @ }}",
+                  "imageTitleTemplate": "{{ @ }}",
+                  "imageWidth": "",
+                  "imageHeight": "",
+                  "linkUrlTemplate": "{{ @ }}",
+                  "linkTextTemplate": "{{ @ }}",
+                  "linkTitleTemplate": "{{ @ }}",
+                  "linkOpenInNewTab": true,
+                  "name": "total_list_usd",
+                  "type": "decimal",
+                  "displayAs": "number",
+                  "order": 100003,
+                  "title": "total_list_usd",
+                  "allowSearch": false,
+                  "alignContent": "right",
+                  "allowHTML": false,
+                  "highlightLinks": false,
+                  "useMonospaceFont": false,
+                  "preserveWhitespace": false
+                },
+                {
+                  "booleanValues": [
+                    "false",
+                    "true"
+                  ],
+                  "imageUrlTemplate": "{{ @ }}",
+                  "imageTitleTemplate": "{{ @ }}",
+                  "imageWidth": "",
+                  "imageHeight": "",
+                  "linkUrlTemplate": "{{ @ }}",
+                  "linkTextTemplate": "{{ @ }}",
+                  "linkTitleTemplate": "{{ @ }}",
+                  "linkOpenInNewTab": true,
+                  "name": "total_gap_usd",
+                  "type": "decimal",
+                  "displayAs": "number",
+                  "order": 100004,
+                  "title": "total_gap_usd",
+                  "allowSearch": false,
+                  "alignContent": "right",
+                  "allowHTML": false,
+                  "highlightLinks": false,
+                  "useMonospaceFont": false,
+                  "preserveWhitespace": false
+                },
+                {
+                  "booleanValues": [
+                    "false",
+                    "true"
+                  ],
+                  "imageUrlTemplate": "{{ @ }}",
+                  "imageTitleTemplate": "{{ @ }}",
+                  "imageWidth": "",
+                  "imageHeight": "",
+                  "linkUrlTemplate": "{{ @ }}",
+                  "linkTextTemplate": "{{ @ }}",
+                  "linkTitleTemplate": "{{ @ }}",
+                  "linkOpenInNewTab": true,
+                  "name": "used_last_month",
+                  "type": "boolean",
+                  "displayAs": "boolean",
+                  "order": 100005,
+                  "title": "used_last_month",
+                  "allowSearch": false,
+                  "alignContent": "right",
+                  "allowHTML": false,
+                  "highlightLinks": false,
+                  "useMonospaceFont": false,
+                  "preserveWhitespace": false
+                }
+              ],
+              "allowHTMLByDefault": false,
+              "itemsPerPage": 25,
+              "paginationSize": "default",
+              "condensed": true,
+              "withRowNumber": false,
+              "frame": {
+                "title": "Inactive Workspaces",
+                "showTitle": true,
+                "showDescription": true,
+                "description": "Measured by checking last month of appearance in cost table. \nWorkspaces on this list could be good candidates for decommision.\n(Note: Some workspaces may still incur costs even if not in active use.)"
+              }
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 8,
+            "width": 2,
+            "height": 4
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "name": "22258834",
+      "displayName": "By Job",
+      "layout": [
+        {
+          "widget": {
+            "name": "70e1c8f9",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "910bf1d8",
+                  "fields": [
+                    {
+                      "name": "week",
+                      "expression": "`week`"
+                    },
+                    {
+                      "name": "sum(job_runs)",
+                      "expression": "SUM(`job_runs`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`week` IS NULL OR `week` NOT IN ('2024-01', '2024-02', '2024-07', '2024-16', '2024-18', '2024-19')"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "combo",
+              "encodings": {
+                "x": {
+                  "fieldName": "week",
+                  "scale": {
+                    "type": "categorical"
+                  },
+                  "displayName": "Year Week"
+                },
+                "y": {
+                  "primary": {
+                    "fields": [
+                      {
+                        "fieldName": "sum(job_runs)",
+                        "displayName": "Count of Job Runs"
+                      }
+                    ]
+                  },
+                  "secondary": {
+                    "fields": [
+                      {
+                        "fieldName": "sum(job_runs)"
+                      }
+                    ]
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                },
+                "label": {
+                  "show": false
+                },
+                "color": {
+                  "legend": {
+                    "hideTitle": true,
+                    "hide": true
+                  }
+                }
+              },
+              "mark": {
+                "colors": [
+                  "#ABD7EB",
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 4
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 3
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 4
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 5
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 6
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 7
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 8
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 9
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "showDescription": true,
+                "description": "Fairly Consistent # Job Runs Per Week Over Last 2 Years",
+                "title": "Job Runs By Month"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 6,
+            "height": 7
+          }
+        },
+        {
+          "widget": {
+            "name": "e8fab907",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "a24fd9b3",
+                  "fields": [
+                    {
+                      "name": "workspace_name",
+                      "expression": "`workspace_name`"
+                    },
+                    {
+                      "name": "job_id",
+                      "expression": "`job_id`"
+                    },
+                    {
+                      "name": "gap_cost",
+                      "expression": "`gap_cost`"
+                    },
+                    {
+                      "name": "runs",
+                      "expression": "`runs`"
+                    },
+                    {
+                      "name": "run_as",
+                      "expression": "`run_as`"
+                    },
+                    {
+                      "name": "last_seen_date",
+                      "expression": "`last_seen_date`"
+                    },
+                    {
+                      "name": "workspace_id",
+                      "expression": "`workspace_id`"
+                    },
+                    {
+                      "name": "job_name",
+                      "expression": "`job_name`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "workspace_name",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 0,
+                    "title": "Workspace",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "job_id",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 1,
+                    "title": "Job ID",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "gap_cost",
+                    "numberFormat": "$0,000.00",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "decimal",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 2,
+                    "title": "Cost to Gap",
+                    "allowSearch": false,
+                    "alignContent": "right",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "runs",
+                    "numberFormat": "0",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "integer",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 4,
+                    "title": "# Total Runs",
+                    "allowSearch": false,
+                    "alignContent": "right",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "run_as",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 5,
+                    "title": "Run As",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "last_seen_date",
+                    "dateTimeFormat": "MM/DD/YYYY HH:mm",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "datetime",
+                    "displayAs": "datetime",
+                    "visible": true,
+                    "order": 6,
+                    "title": "Last Run Date",
+                    "allowSearch": false,
+                    "alignContent": "right",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "workspace_id",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 7,
+                    "title": "Workspace ID",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "job_name",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 8,
+                    "title": "Run Name",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  }
+                ]
+              },
+              "invisibleColumns": [
+                {
+                  "numberFormat": "$0,000.00",
+                  "booleanValues": [
+                    "false",
+                    "true"
+                  ],
+                  "imageUrlTemplate": "{{ @ }}",
+                  "imageTitleTemplate": "{{ @ }}",
+                  "imageWidth": "",
+                  "imageHeight": "",
+                  "linkUrlTemplate": "{{ @ }}",
+                  "linkTextTemplate": "{{ @ }}",
+                  "linkTitleTemplate": "{{ @ }}",
+                  "linkOpenInNewTab": true,
+                  "name": "list_cost",
+                  "type": "decimal",
+                  "displayAs": "number",
+                  "order": 3,
+                  "title": "List Price",
+                  "allowSearch": false,
+                  "alignContent": "right",
+                  "allowHTML": false,
+                  "highlightLinks": false,
+                  "useMonospaceFont": false,
+                  "preserveWhitespace": false
+                },
+                {
+                  "booleanValues": [
+                    "false",
+                    "true"
+                  ],
+                  "imageUrlTemplate": "{{ @ }}",
+                  "imageTitleTemplate": "{{ @ }}",
+                  "imageWidth": "",
+                  "imageHeight": "",
+                  "linkUrlTemplate": "{{ @ }}",
+                  "linkTextTemplate": "{{ @ }}",
+                  "linkTitleTemplate": "{{ @ }}",
+                  "linkOpenInNewTab": true,
+                  "name": "is_top_5_job",
+                  "type": "boolean",
+                  "displayAs": "boolean",
+                  "order": 9,
+                  "title": "is_top_5_job",
+                  "allowSearch": false,
+                  "alignContent": "right",
+                  "allowHTML": false,
+                  "highlightLinks": false,
+                  "useMonospaceFont": false,
+                  "preserveWhitespace": false
+                }
+              ],
+              "allowHTMLByDefault": false,
+              "itemsPerPage": 25,
+              "paginationSize": "default",
+              "condensed": true,
+              "withRowNumber": false,
+              "frame": {
+                "title": "Most Expensive Jobs in the Last 30 Days",
+                "showTitle": true,
+                "showDescription": true,
+                "description": "To investigate a job on this list, copy the Job ID to the clipboard and then go to Workspace (top right corner) > Job Runs (under Data Engineering in left hand side panel) > Jobs & pipelines > Paste Job ID into the search bar"
+              }
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 8,
+            "width": 5,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "a1043842",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "a24fd9b3",
+                  "fields": [
+                    {
+                      "name": "sum(gap_cost)",
+                      "expression": "SUM(`gap_cost`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`is_top_5_job` IN (TRUE)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(gap_cost)",
+                  "style": {
+                    "color": {
+                      "themeColorType": "visualizationColors",
+                      "position": 4
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "title": "Sum of 5 Most Expensive Jobs Last 30 Days",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 7,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "186e2c0f",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "a24fd9b3",
+                  "fields": [
+                    {
+                      "name": "sum(gap_cost)",
+                      "expression": "SUM(`gap_cost`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(gap_cost)"
+                }
+              },
+              "frame": {
+                "title": "Total Cost of All Jobs Last 30 Days",
+                "showTitle": true
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 10,
+            "width": 1,
+            "height": 3
+          }
+        },
+        {
+          "widget": {
+            "name": "3535e50e",
+            "queries": [
+              {
+                "name": "dashboards/01f092867acf12368dcf20f6f1c42dac/datasets/01f09f2a965d1d698e0c5d74bbee0684_workspace_name",
+                "query": {
+                  "datasetName": "a24fd9b3",
+                  "fields": [
+                    {
+                      "name": "workspace_name",
+                      "expression": "`workspace_name`"
+                    },
+                    {
+                      "name": "workspace_name_associativity",
+                      "expression": "COUNT_IF(`associative_filter_predicate_group`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "filter-single-select",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "workspace_name",
+                    "queryName": "dashboards/01f092867acf12368dcf20f6f1c42dac/datasets/01f09f2a965d1d698e0c5d74bbee0684_workspace_name"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Workspace Name"
+              }
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 7,
+            "width": 2,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "441baf6d",
+            "queries": [
+              {
+                "name": "dashboards/01f092867acf12368dcf20f6f1c42dac/datasets/01f09f2a965d1d698e0c5d74bbee0684_gap_cost",
+                "query": {
+                  "datasetName": "a24fd9b3",
+                  "fields": [
+                    {
+                      "name": "min(gap_cost)",
+                      "expression": "MIN(`gap_cost`)"
+                    },
+                    {
+                      "name": "max(gap_cost)",
+                      "expression": "MAX(`gap_cost`)"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "range-slider",
+              "encodings": {
+                "fields": [
+                  {
+                    "fieldName": "gap_cost",
+                    "queryName": "dashboards/01f092867acf12368dcf20f6f1c42dac/datasets/01f09f2a965d1d698e0c5d74bbee0684_gap_cost"
+                  }
+                ]
+              },
+              "frame": {
+                "showTitle": true,
+                "title": "Cost to Gap"
+              }
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 7,
+            "width": 3,
+            "height": 1
+          }
+        },
+        {
+          "widget": {
+            "name": "f73bf201",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "0e674c70",
+                  "fields": [
+                    {
+                      "name": "last_seen_date",
+                      "expression": "`last_seen_date`"
+                    },
+                    {
+                      "name": "workspace_id",
+                      "expression": "`workspace_id`"
+                    },
+                    {
+                      "name": "job_id",
+                      "expression": "`job_id`"
+                    },
+                    {
+                      "name": "run_id",
+                      "expression": "`run_id`"
+                    },
+                    {
+                      "name": "gap_cost",
+                      "expression": "`gap_cost`"
+                    },
+                    {
+                      "name": "name",
+                      "expression": "`name`"
+                    },
+                    {
+                      "name": "run_as",
+                      "expression": "`run_as`"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "last_seen_date",
+                    "dateTimeFormat": "MM/DD/YYYY HH:mm",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "datetime",
+                    "displayAs": "datetime",
+                    "visible": true,
+                    "order": 0,
+                    "title": "Run Date",
+                    "allowSearch": false,
+                    "alignContent": "right",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "workspace_id",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 1,
+                    "title": "Workspace ID",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "job_id",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 2,
+                    "title": "Job ID",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "run_id",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 3,
+                    "title": "Run ID",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "gap_cost",
+                    "numberFormat": "$0,000.00",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "decimal",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 4,
+                    "title": "Cost of Run",
+                    "allowSearch": false,
+                    "alignContent": "right",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "name",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 5,
+                    "title": "Job Name",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "run_as",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "string",
+                    "displayAs": "string",
+                    "visible": true,
+                    "order": 6,
+                    "title": "Run As",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  }
+                ]
+              },
+              "invisibleColumns": [
+                {
+                  "booleanValues": [
+                    "false",
+                    "true"
+                  ],
+                  "imageUrlTemplate": "{{ @ }}",
+                  "imageTitleTemplate": "{{ @ }}",
+                  "imageWidth": "",
+                  "imageHeight": "",
+                  "linkUrlTemplate": "{{ @ }}",
+                  "linkTextTemplate": "{{ @ }}",
+                  "linkTitleTemplate": "{{ @ }}",
+                  "linkOpenInNewTab": true,
+                  "name": "list_cost",
+                  "type": "decimal",
+                  "displayAs": "number",
+                  "order": 7,
+                  "title": "list_cost",
+                  "allowSearch": false,
+                  "alignContent": "right",
+                  "allowHTML": false,
+                  "highlightLinks": false,
+                  "useMonospaceFont": false,
+                  "preserveWhitespace": false
+                }
+              ],
+              "allowHTMLByDefault": false,
+              "itemsPerPage": 25,
+              "paginationSize": "default",
+              "condensed": true,
+              "withRowNumber": false,
+              "frame": {
+                "showTitle": true,
+                "title": "Cost by Single Job Run",
+                "showDescription": true,
+                "description": "List of highest costs incurred by Gap for a single run in the past 30 days"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 13,
+            "width": 6,
+            "height": 7
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    },
+    {
+      "name": "1a1cef53",
+      "displayName": "Optimization Effort - Impact",
+      "layout": [
+        {
+          "widget": {
+            "name": "be0310b5",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "9e21058c",
+                  "fields": [
+                    {
+                      "name": "monthly(ds)",
+                      "expression": "DATE_TRUNC(\"MONTH\", `ds`)"
+                    },
+                    {
+                      "name": "total_gap_usd",
+                      "expression": "`total_gap_usd`"
+                    },
+                    {
+                      "name": "yhat",
+                      "expression": "`yhat`"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`YearMonth` IS NULL OR `YearMonth` NOT IN ('2025-10', '2025-09', '2025-08')"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "combo",
+              "encodings": {
+                "x": {
+                  "fieldName": "monthly(ds)",
+                  "scale": {
+                    "type": "temporal"
+                  },
+                  "axis": {
+                    "hideTitle": true,
+                    "hideLabels": false
+                  }
+                },
+                "label": {
+                  "show": false
+                },
+                "color": {
+                  "legend": {
+                    "position": "bottom"
+                  }
+                },
+                "y": {
+                  "primary": {
+                    "fields": [
+                      {
+                        "fieldName": "total_gap_usd",
+                        "displayName": "    Actual Consumption"
+                      }
+                    ]
+                  },
+                  "secondary": {
+                    "fields": [
+                      {
+                        "fieldName": "yhat",
+                        "displayName": "Meta Prophet Model"
+                      }
+                    ]
+                  },
+                  "scale": {
+                    "type": "quantitative"
+                  }
+                }
+              },
+              "frame": {
+                "title": "Total Gap Consumption",
+                "showTitle": true,
+                "showDescription": true,
+                "description": "Measured by Aggregating Spend Across All Workspaces"
+              },
+              "mark": {
+                "colors": [
+                  "#ABD7EB",
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 4
+                  },
+                  "#009162",
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 8
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 9
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 9
+                  },
+                  {
+                    "themeColorType": "visualizationColors",
+                    "position": 10
+                  }
+                ]
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 0,
+            "width": 3,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "d957fbe1",
+            "multilineTextboxSpec": {
+              "lines": [
+                "### Methodology - Meta Prophet Model Trained Pre-Aug. 2024\n",
+                "<p>&nbsp;</p>\n",
+                "\n",
+                "The forecasting model uses Facebook's Prophet algorithm trained on historical data through **August 2024 to measure the value of an optimization effort done during that time period (treated as an \"intervention\" in this instance).** To prepare the data for modeling, a 3-month centered moving average was applied to smooth out noise while preserving underlying trends, and extreme outliers were removed by capping values at the 1st and 99th percentiles. The model was configured to detect yearly seasonal patterns using multiplicative seasonality, which allows seasonal effects to scale proportionally with the data level (weekly and daily seasonality was not included). \n",
+                "\n",
+                "<span style=\"text-align:center;display:block\">*(red line) - (blue bar graph) = projected monthly savings*</span>"
+              ]
+            }
+          },
+          "position": {
+            "x": 1,
+            "y": 8,
+            "width": 3,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "9789195d",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "9e21058c",
+                  "fields": [
+                    {
+                      "name": "YearMonth",
+                      "expression": "`YearMonth`"
+                    },
+                    {
+                      "name": "total_gap_usd",
+                      "expression": "`total_gap_usd`"
+                    },
+                    {
+                      "name": "yhat",
+                      "expression": "`yhat`"
+                    },
+                    {
+                      "name": "abs(difference)",
+                      "expression": "`abs(difference)`"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`YearMonth` IN ('2025-07', '2025-06', '2025-05', '2025-04', '2025-03', '2025-02', '2024-12', '2025-01', '2024-11', '2024-10', '2024-09')"
+                    }
+                  ],
+                  "disaggregated": true
+                }
+              }
+            ],
+            "spec": {
+              "version": 1,
+              "widgetType": "table",
+              "encodings": {
+                "columns": [
+                  {
+                    "fieldName": "YearMonth",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "string",
+                    "displayAs": "datetime",
+                    "visible": true,
+                    "order": 0,
+                    "title": "Date",
+                    "allowSearch": false,
+                    "alignContent": "left",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "total_gap_usd",
+                    "numberFormat": "$0,000.00",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "decimal",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 1,
+                    "title": "Total Consumption (Actual)",
+                    "allowSearch": false,
+                    "alignContent": "right",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "yhat",
+                    "numberFormat": "$0,000.00",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "float",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 3,
+                    "title": "Prophet Model (Forecast)",
+                    "allowSearch": false,
+                    "alignContent": "right",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false
+                  },
+                  {
+                    "fieldName": "abs(difference)",
+                    "numberFormat": "$0,000.00",
+                    "booleanValues": [
+                      "false",
+                      "true"
+                    ],
+                    "imageUrlTemplate": "{{ @ }}",
+                    "imageTitleTemplate": "{{ @ }}",
+                    "imageWidth": "",
+                    "imageHeight": "",
+                    "linkUrlTemplate": "{{ @ }}",
+                    "linkTextTemplate": "{{ @ }}",
+                    "linkTitleTemplate": "{{ @ }}",
+                    "linkOpenInNewTab": true,
+                    "type": "float",
+                    "displayAs": "number",
+                    "visible": true,
+                    "order": 4,
+                    "title": "Estimated Savings",
+                    "allowSearch": false,
+                    "alignContent": "right",
+                    "allowHTML": false,
+                    "highlightLinks": false,
+                    "useMonospaceFont": false,
+                    "preserveWhitespace": false,
+                    "cellFormat": {
+                      "default": {
+                        "foregroundColor": {
+                          "themeColorType": "visualizationColors",
+                          "position": 3
+                        }
+                      },
+                      "rules": []
+                    }
+                  }
+                ]
+              },
+              "invisibleColumns": [
+                {
+                  "numberFormat": "$0,000.00",
+                  "booleanValues": [
+                    "false",
+                    "true"
+                  ],
+                  "imageUrlTemplate": "{{ @ }}",
+                  "imageTitleTemplate": "{{ @ }}",
+                  "imageWidth": "",
+                  "imageHeight": "",
+                  "linkUrlTemplate": "{{ @ }}",
+                  "linkTextTemplate": "{{ @ }}",
+                  "linkTitleTemplate": "{{ @ }}",
+                  "linkOpenInNewTab": true,
+                  "name": "five_yr_forecast_line",
+                  "type": "float",
+                  "displayAs": "number",
+                  "order": 2,
+                  "title": "1.5% MoM Rate (Forecast)",
+                  "allowSearch": false,
+                  "alignContent": "right",
+                  "allowHTML": false,
+                  "highlightLinks": false,
+                  "useMonospaceFont": false,
+                  "preserveWhitespace": false
+                },
+                {
+                  "numberFormat": "$0,000.00",
+                  "booleanValues": [
+                    "false",
+                    "true"
+                  ],
+                  "imageUrlTemplate": "{{ @ }}",
+                  "imageTitleTemplate": "{{ @ }}",
+                  "imageWidth": "",
+                  "imageHeight": "",
+                  "linkUrlTemplate": "{{ @ }}",
+                  "linkTextTemplate": "{{ @ }}",
+                  "linkTitleTemplate": "{{ @ }}",
+                  "linkOpenInNewTab": true,
+                  "name": "difference",
+                  "type": "float",
+                  "displayAs": "number",
+                  "order": 5,
+                  "title": "Estimated Savings",
+                  "allowSearch": false,
+                  "alignContent": "right",
+                  "allowHTML": false,
+                  "highlightLinks": false,
+                  "useMonospaceFont": false,
+                  "preserveWhitespace": false,
+                  "cellFormat": {
+                    "default": {
+                      "foregroundColor": {
+                        "themeColorType": "visualizationColors",
+                        "position": 3
+                      }
+                    },
+                    "rules": []
+                  }
+                },
+                {
+                  "booleanValues": [
+                    "false",
+                    "true"
+                  ],
+                  "imageUrlTemplate": "{{ @ }}",
+                  "imageTitleTemplate": "{{ @ }}",
+                  "imageWidth": "",
+                  "imageHeight": "",
+                  "linkUrlTemplate": "{{ @ }}",
+                  "linkTextTemplate": "{{ @ }}",
+                  "linkTitleTemplate": "{{ @ }}",
+                  "linkOpenInNewTab": true,
+                  "name": "total_list_usd",
+                  "type": "decimal",
+                  "displayAs": "number",
+                  "order": 6,
+                  "title": "total_list_usd",
+                  "allowSearch": false,
+                  "alignContent": "right",
+                  "allowHTML": false,
+                  "highlightLinks": false,
+                  "useMonospaceFont": false,
+                  "preserveWhitespace": false
+                },
+                {
+                  "dateTimeFormat": "DD/MM/YYYY HH:mm:ss.SSS",
+                  "booleanValues": [
+                    "false",
+                    "true"
+                  ],
+                  "imageUrlTemplate": "{{ @ }}",
+                  "imageTitleTemplate": "{{ @ }}",
+                  "imageWidth": "",
+                  "imageHeight": "",
+                  "linkUrlTemplate": "{{ @ }}",
+                  "linkTextTemplate": "{{ @ }}",
+                  "linkTitleTemplate": "{{ @ }}",
+                  "linkOpenInNewTab": true,
+                  "name": "ds",
+                  "type": "datetime",
+                  "displayAs": "datetime",
+                  "order": 7,
+                  "title": "ds",
+                  "allowSearch": false,
+                  "alignContent": "right",
+                  "allowHTML": false,
+                  "highlightLinks": false,
+                  "useMonospaceFont": false,
+                  "preserveWhitespace": false
+                },
+                {
+                  "numberFormat": "0.00",
+                  "booleanValues": [
+                    "false",
+                    "true"
+                  ],
+                  "imageUrlTemplate": "{{ @ }}",
+                  "imageTitleTemplate": "{{ @ }}",
+                  "imageWidth": "",
+                  "imageHeight": "",
+                  "linkUrlTemplate": "{{ @ }}",
+                  "linkTextTemplate": "{{ @ }}",
+                  "linkTitleTemplate": "{{ @ }}",
+                  "linkOpenInNewTab": true,
+                  "name": "y",
+                  "type": "float",
+                  "displayAs": "number",
+                  "order": 8,
+                  "title": "y",
+                  "allowSearch": false,
+                  "alignContent": "right",
+                  "allowHTML": false,
+                  "highlightLinks": false,
+                  "useMonospaceFont": false,
+                  "preserveWhitespace": false
+                }
+              ],
+              "allowHTMLByDefault": false,
+              "itemsPerPage": 25,
+              "paginationSize": "default",
+              "condensed": true,
+              "withRowNumber": false,
+              "firstNFrozenColumns": 1
+            }
+          },
+          "position": {
+            "x": 3,
+            "y": 0,
+            "width": 3,
+            "height": 8
+          }
+        },
+        {
+          "widget": {
+            "name": "20441c5f",
+            "queries": [
+              {
+                "name": "main_query",
+                "query": {
+                  "datasetName": "9e21058c",
+                  "fields": [
+                    {
+                      "name": "sum(abs(difference))",
+                      "expression": "SUM(`abs(difference)`)"
+                    }
+                  ],
+                  "filters": [
+                    {
+                      "expression": "`YearMonth` IN ('2024-09', '2024-10', '2024-11', '2024-12', '2025-01', '2025-02', '2025-03', '2025-04', '2025-05', '2025-06', '2025-07', '2025-08')"
+                    }
+                  ],
+                  "disaggregated": false
+                }
+              }
+            ],
+            "spec": {
+              "version": 2,
+              "widgetType": "counter",
+              "encodings": {
+                "value": {
+                  "fieldName": "sum(abs(difference))",
+                  "style": {
+                    "color": {
+                      "themeColorType": "visualizationColors",
+                      "position": 3
+                    }
+                  }
+                }
+              },
+              "frame": {
+                "title": "Estimated Cost Savings",
+                "showTitle": true,
+                "showDescription": true,
+                "description": "Time measured: 9/24-7/25"
+              }
+            }
+          },
+          "position": {
+            "x": 0,
+            "y": 8,
+            "width": 1,
+            "height": 5
+          }
+        },
+        {
+          "widget": {
+            "name": "d0f20a2f",
+            "multilineTextboxSpec": {
+              "lines": [
+                "### Conclusion\n",
+                "<p>&nbsp;</p>\n",
+                "\n",
+                "We find that the costs to Gap were increasing significantly over the time period pre-Aug. 2024, much above the initial expected growth rate of 1.5% set out in the initial 5-year plan. After the optimization efforts were undertaken, the consumption costs undertaken by Gap were actually stalled/decreased below the 1.5% growth rate in the 12 month period immediately following the intervention.\n",
+                "\n",
+                "By calculating the difference between the red forecast line (\"the track that Gap was going on\") and the true cost shown as a blue bar graph (\"what actually occurred\"), we estimate a savings of 5 million dollars to Gap over this time period. "
+              ]
+            }
+          },
+          "position": {
+            "x": 4,
+            "y": 8,
+            "width": 2,
+            "height": 5
+          }
+        }
+      ],
+      "pageType": "PAGE_TYPE_CANVAS"
+    }
+  ],
+  "uiSettings": {
+    "theme": {
+      "widgetHeaderAlignment": "ALIGNMENT_UNSPECIFIED"
+    }
+  }
+}
